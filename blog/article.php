@@ -1,6 +1,67 @@
 <?php
 require_once 'config.php';
 
+// Обработка рейтинга (ДОЛЖНО БЫТЬ САМЫМ ПЕРВЫМ!)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['rate_article'])) {
+    if (!isLoggedIn()) {
+        $_SESSION['error'] = 'Для оценки необходимо войти в систему';
+        header("Location: " . ($_SERVER['HTTP_REFERER'] ?? 'index.php'));
+        exit;
+    }
+    
+    $articleId = (int)($_POST['article_id'] ?? 0);
+    $value = (int)($_POST['rating_value'] ?? 0);
+    $userId = $_SESSION['user_id'];
+    
+    if (!$articleId) {
+        $_SESSION['error'] = 'Не указана статья';
+        header("Location: index.php");
+        exit;
+    }
+    
+    if ($value !== 1 && $value !== -1) {
+        $_SESSION['error'] = 'Некорректное значение рейтинга';
+        header("Location: article.php?id=$articleId");
+        exit;
+    }
+    
+    $db = getDB();
+    
+    try {
+        // Проверяем существующий рейтинг
+        $checkStmt = $db->prepare("SELECT id, value FROM ratings WHERE article_id = ? AND user_id = ?");
+        $checkStmt->execute([$articleId, $userId]);
+        $existingRating = $checkStmt->fetch();
+        
+        if ($existingRating) {
+            if ($existingRating['value'] === $value) {
+                // Удаляем оценку (повторное нажатие)
+                $deleteStmt = $db->prepare("DELETE FROM ratings WHERE article_id = ? AND user_id = ?");
+                $deleteStmt->execute([$articleId, $userId]);
+                $_SESSION['success'] = 'Оценка удалена';
+            } else {
+                // Меняем оценку
+                $updateStmt = $db->prepare("UPDATE ratings SET value = ? WHERE article_id = ? AND user_id = ?");
+                $updateStmt->execute([$value, $articleId, $userId]);
+                $_SESSION['success'] = 'Оценка изменена';
+            }
+        } else {
+            // Добавляем новую оценку
+            $insertStmt = $db->prepare("INSERT INTO ratings (article_id, user_id, value) VALUES (?, ?, ?)");
+            $insertStmt->execute([$articleId, $userId, $value]);
+            $_SESSION['success'] = 'Спасибо за оценку!';
+        }
+        
+        header("Location: article.php?id=$articleId");
+        exit;
+        
+    } catch (PDOException $e) {
+        $_SESSION['error'] = 'Ошибка при сохранении оценки: ' . $e->getMessage();
+        header("Location: article.php?id=$articleId");
+        exit;
+    }
+}
+
 if (!isset($_GET['id'])) {
     header('Location: index.php');
     exit;
@@ -27,7 +88,7 @@ if (!$article) {
 // Увеличение счетчика просмотров
 $db->prepare("UPDATE articles SET views = views + 1 WHERE id = ?")->execute([$articleId]);
 
-// Получение рейтинга
+// Получение рейтинга (используем функции из config.php)
 $rating = getArticleRating($articleId);
 $userRating = isLoggedIn() ? getUserRating($articleId, $_SESSION['user_id']) : 0;
 
@@ -115,29 +176,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_comment'])) {
         }
     }
 }
-
-// Обработка рейтинга
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['rate'])) {
-    if (!isLoggedIn()) {
-        $error = 'Для оценки необходимо войти в систему';
-    } else {
-        $value = (int)$_POST['value'];
-        $userId = $_SESSION['user_id'];
-        
-        // Удаляем предыдущий рейтинг пользователя
-        $db->prepare("DELETE FROM ratings WHERE article_id = ? AND user_id = ?")
-           ->execute([$articleId, $userId]);
-        
-        // Добавляем новый
-        if ($value !== 0) {
-            $db->prepare("INSERT INTO ratings (article_id, user_id, value) VALUES (?, ?, ?)")
-               ->execute([$articleId, $userId, $value]);
-        }
-        
-        header("Location: article.php?id=$articleId");
-        exit;
-    }
-}
 ?>
 <!DOCTYPE html>
 <html lang="ru">
@@ -146,50 +184,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['rate'])) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= escape($article['title']) ?> - <?= SITE_NAME ?></title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
         .avatar { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; }
         .comment { border-left: 2px solid #dee2e6; padding-left: 15px; margin-bottom: 15px; }
-        .comment .comment { margin-left: 30px; }
-        .rating-btn.active { color: #0d6efd; font-weight: bold; }
-        .reply-form { display: none; margin-top: 10px; }
-        .reply-form.active { display: block; }
+        .rating-btn { border: none; background: none; cursor: pointer; font-size: 1.2rem; padding: 5px 10px; }
+        .like-btn.active { color: #198754; }
+        .dislike-btn.active { color: #dc3545; }
+        .rating-btn:hover { transform: scale(1.1); transition: transform 0.2s; }
     </style>
 </head>
 <body>
-    <?php 
-    
-    if (!file_exists('navbar.php')) {
-        // Простая навигация
-        echo '<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-            <div class="container">
-                <a class="navbar-brand" href="index.php">'.SITE_NAME.'</a>
-                <div class="navbar-nav ms-auto">
-                    <a class="nav-link" href="index.php">Главная</a>
-                    '.(isLoggedIn() ? '
-                    <a class="nav-link" href="profile.php">'.escape($_SESSION['username']).'</a>
-                    <a class="nav-link" href="logout.php">Выход</a>
-                    ' : '
-                    <a class="nav-link" href="login.php">Вход</a>
-                    <a class="nav-link" href="register.php">Регистрация</a>
-                    ').'
-                </div>
-            </div>
-        </nav>';
-    } else {
-        require_once 'navbar.php';
-    }
-    ?>
+    <?php require_once 'navbar.php'; ?>
 
     <div class="container mt-4">
-        <!-- Навигация -->
-        <nav aria-label="breadcrumb">
-            <ol class="breadcrumb">
-                <li class="breadcrumb-item"><a href="index.php">Главная</a></li>
-                <li class="breadcrumb-item active"><?= escape($article['title']) ?></li>
-            </ol>
-        </nav>
-
-        <!-- Статья -->
+        <!-- Сообщения -->
+        <?php if (isset($_SESSION['success'])): ?>
+            <div class="alert alert-success alert-dismissible fade show">
+                <?= $_SESSION['success'] ?>
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+            <?php unset($_SESSION['success']); ?>
+        <?php endif; ?>
+        
+        <?php if (isset($_SESSION['error'])): ?>
+            <div class="alert alert-danger alert-dismissible fade show">
+                <?= $_SESSION['error'] ?>
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+            <?php unset($_SESSION['error']); ?>
+        <?php endif; ?>
+<!-- Статья -->
         <article class="mb-5">
             <div class="card">
                 <div class="card-body">
@@ -203,21 +228,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['rate'])) {
                             </div>
                         </div>
                         
+                        <!-- Форма рейтинга -->
                         <div class="rating-section">
                             <form method="POST" class="d-inline">
-                                <button type="submit" name="rate" 
-                                        class="rating-btn btn btn-sm <?= $userRating == 1 ? 'btn-primary' : 'btn-outline-primary' ?>"
-                                        onclick="this.form.querySelector('input[name=\"value\"]').value = 1">
-                                    👍 <?= $rating['likes'] ?? 0 ?>
-                                </button>
-                                <button type="submit" name="rate" 
-                                        class="rating-btn btn btn-sm <?= $userRating == -1 ? 'btn-danger' : 'btn-outline-danger' ?>"
-                                        onclick="this.form.querySelector('input[name=\"value\"]').value = -1">
-                                    👎 <?= $rating['dislikes'] ?? 0 ?>
-                                </button>
-                                <input type="hidden" name="value" value="">
+                                <input type="hidden" name="rate_article" value="1">
+                                <input type="hidden" name="article_id" value="<?= $articleId ?>">
+                                
+                                <div class="btn-group" role="group">
+                                    <!-- Лайк -->
+                                    <button type="submit" name="rating_value" value="1"
+                                            class="rating-btn like-btn <?= $userRating == 1 ? 'active' : '' ?>">
+                                        <i class="fas fa-thumbs-up"></i>
+                                        <span class="ms-1"><?= $rating['likes'] ?></span>
+                                    </button>
+                                    
+                                    <!-- Общий рейтинг -->
+                                    <span class="mx-2 align-self-center">
+                                        <span class="badge bg-<?= $rating['total'] >= 0 ? 'success' : 'danger' ?> fs-6">
+                                            <?= $rating['total'] >= 0 ? '+' : '' ?><?= $rating['total'] ?>
+                                        </span>
+                                    </span>
+                                    
+                                    <!-- Дизлайк -->
+                                    <button type="submit" name="rating_value" value="-1"
+                                            class="rating-btn dislike-btn <?= $userRating == -1 ? 'active' : '' ?>">
+                                        <i class="fas fa-thumbs-down"></i>
+                                        <span class="ms-1"><?= $rating['dislikes'] ?></span>
+                                    </button>
+                                </div>
                             </form>
-                            <span class="badge bg-secondary ms-2">👁️ <?= $article['views'] ?></span>
+                            
+                            <span class="badge bg-secondary ms-2">
+                                <i class="fas fa-eye"></i> <?= $article['views'] ?>
+                            </span>
                         </div>
                     </div>
                     
@@ -230,13 +273,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['rate'])) {
                     <?php if (isLoggedIn() && ($_SESSION['user_id'] == $article['user_id'] || isAdmin())): ?>
                         <div class="mt-4 pt-3 border-top">
                             <a href="edit_article.php?id=<?= $article['id'] ?>" class="btn btn-warning">
-                                Редактировать
+                                <i class="fas fa-edit"></i> Редактировать
                             </a>
                         </div>
                     <?php endif; ?>
                 </div>
             </div>
         </article>
+
+
+
 
         <!-- Комментарии -->
         <section id="comments" class="mb-5">
@@ -361,17 +407,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['rate'])) {
             this.style.display = 'none';
             document.getElementById('content').placeholder = 'Введите текст комментария...';
         });
-        
-        // Обработка рейтинга
-        document.querySelectorAll('.rating-btn').forEach(btn => {
-            btn.addEventListener('click', function(e) {
-                e.preventDefault();
-                const form = this.closest('form');
-                const value = this.textContent.includes('👍') ? 1 : -1;
-                form.querySelector('input[name="value"]').value = value;
-                form.submit();
-            });
-        });
+
     </script>
 </body>
 </html>
