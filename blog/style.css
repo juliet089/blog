@@ -1,0 +1,48 @@
+/* Основные стили */
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    line-height: 1.6;
+}
+
+.avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    object-fit: cover;
+}
+
+.article-card {
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.article-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+}
+
+.comment {
+    border-left: 2px solid #dee2e6;
+    padding-left: 15px;
+    margin-bottom: 15px;
+}
+
+.rating-btn {
+    border: none;
+    background: none;
+    cursor: pointer;
+}
+
+.rating-btn.active {
+    font-weight: bold;
+}
+
+/* Адаптивность */
+@media (max-width: 768px) {
+    .navbar-nav {
+        margin-top: 1rem;
+    }
+    
+    .search-form {
+        margin-bottom: 1rem;
+    }
+}
